@@ -1,0 +1,131 @@
+#! /bin/bash
+
+source setup_variables.sh
+
+IP_ADDR='192.168.75.194'
+PASSWORD="root"
+
+CURRENT_DIR=$(pwd)
+
+cd "$PETALINUX_INSTALL_DIR"
+
+current_args=( "$@" )
+set --   # clear arguments for settings.sh
+source settings.sh
+set -- "${current_args[@]}"  # Restore arguments
+
+SSH_ARGS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+
+# Modify MetaAdi to be compatible with petalinux project
+ARG1="$1"
+while true; do
+	if [ -z "$ARG1" ]; then
+		echo "Project List: [ alinx | ??? ]"
+		printf "Enter Project Name: "
+		read ARG1
+		continue
+	fi
+	
+	if [ "$ARG1" = "a" ] || [ "$ARG1" = "alinx" ] || [ "$ARG1" = "alinx_comp" ]; then
+		RUN_PETALINUX_PROJECT="alinx"
+		HDL_PROJECT="/home/esi/Projects/alinx_hw/compressor"
+		HDL_PROJECT_NAME=$(basename "$HDL_PROJECT")
+	else
+		echo "Project Name is not valid, try again."
+		ARG1=""
+		continue
+	fi
+	break
+done
+
+cd "$PETALINUX_DIR/Projects/$RUN_PETALINUX_PROJECT"
+
+while true; do
+	echo "-------------------------------------"
+	echo "1 - Config PetaLinux"
+	echo "2 - Build $RUN_PETALINUX_PROJECT"
+	echo "3 - Make .BIN and write to SD"
+	echo "4 - Make .BIN and send to SD"
+	echo "5 - Send elf to SD"
+	echo "0 - Exit"
+	echo "-------------------------------------"
+	read response
+	if [[ "$response" == *"1"* ]]; then
+		echo "----------------------Config PetaLinux---------------------"
+		printf "Configure Hardware?[y/N]: "
+		read config_response
+		cd "$PETALINUX_DIR/Projects/$RUN_PETALINUX_PROJECT"
+		if [ "$config_response" = "y" ]; then
+			petalinux-config --silentconfig --get-hw-description="$HDL_PROJECT/vivado"
+		else
+			petalinux-config
+		fi
+	fi
+	if [[ "$response" == *"2"* ]]; then
+		echo "-----------------Build $RUN_PETALINUX_PROJECT-----------------"
+		cd "$PETALINUX_DIR/Projects/$RUN_PETALINUX_PROJECT"
+		petalinux-build
+	fi
+	if [[ "$response" == *"3"* ]]; then
+		echo "------------------Make .BIN files for SD-------------------"
+		cd "$PETALINUX_DIR/Projects/$RUN_PETALINUX_PROJECT"
+		petalinux-package --boot --u-boot --fpga "$HDL_PROJECT/vivado/$HDL_PROJECT_NAME.runs/impl_1/design_1_wrapper.bit" --force
+		
+		sd_loc_response=$(zenity --file-selection --directory --title="Select SD-Card directory")
+		case $? in
+			0)
+				rm "$sd_loc_response/BOOT.BIN"
+				rm "$sd_loc_response/image.ub"
+				rm "$sd_loc_response/client"
+				rm "$sd_loc_response/dump_packet.csv"
+				cp "$PETALINUX_DIR/Projects/$RUN_PETALINUX_PROJECT/images/linux/BOOT.BIN" "$sd_loc_response"
+				cp "$PETALINUX_DIR/Projects/$RUN_PETALINUX_PROJECT/images/linux/image.ub" "$sd_loc_response"
+				cp "$PETALINUX_DIR/Projects/$RUN_PETALINUX_PROJECT/images/linux/boot.scr" "$sd_loc_response"
+				cp "/home/esi/Projects/simple_socket/resources/dump_packet.csv" "$sd_loc_response"
+				cp "/home/esi/Projects/simple_socket/build_client/client" "$sd_loc_response";;
+			1)
+				echo "response is empty, image created but not copied to SD"
+				echo "Be careful to copy:"
+				echo "- BOOT.BIN & image.ub & boot.scr in petalinux/images/linux,"
+				echo "- application in socket/build"
+				echo "- dump_packet in socket/resources";;
+		
+		   -1)
+				echo "An unexpected error has occurred, image created but not copied to SD"
+				echo "Be careful to copy:"
+				echo "- BOOT.BIN & image.ub & boot.scr in petalinux/images/linux,"
+				echo "- application in socket/build"
+				echo "- dump_packet in socket/resources";;
+		esac
+	fi
+	if [[ "$response" == *"4"* ]]; then
+		echo "------------------Make .BIN files for SD-------------------"
+		cd "$PETALINUX_DIR/Projects/$RUN_PETALINUX_PROJECT"
+		# petalinux-package --boot --u-boot --fpga "$HDL_PROJECT/vivado/$HDL_PROJECT_NAME.runs/impl_1/design_1_wrapper.bit" --force
+		
+		SDCARD=/mnt/sdcard
+		sshpass -p $PASSWORD ssh $SSH_ARGS root@$IP_ADDR "mkdir $SDCARD"
+		sshpass -p $PASSWORD ssh $SSH_ARGS root@$IP_ADDR "mount /dev/mmcblk1p1 $SDCARD"
+		sshpass -p $PASSWORD ssh $SSH_ARGS root@$IP_ADDR "rm $SDCARD/boot.scr"
+		sshpass -p $PASSWORD ssh $SSH_ARGS root@$IP_ADDR "rm $SDCARD/BOOT.BIN"
+		sshpass -p $PASSWORD ssh $SSH_ARGS root@$IP_ADDR "rm $SDCARD/image.ub"
+		sshpass -p $PASSWORD ssh $SSH_ARGS root@$IP_ADDR "rm $SDCARD/client"
+		sshpass -p $PASSWORD ssh $SSH_ARGS root@$IP_ADDR "rm $SDCARD/dump_packet.csv"
+		sshpass -p $PASSWORD scp $SSH_ARGS "$PETALINUX_DIR/Projects/$RUN_PETALINUX_PROJECT/images/linux/boot.scr" root@$IP_ADDR:$SDCARD
+		sshpass -p $PASSWORD scp $SSH_ARGS "$PETALINUX_DIR/Projects/$RUN_PETALINUX_PROJECT/images/linux/BOOT.BIN" root@$IP_ADDR:$SDCARD
+		sshpass -p $PASSWORD scp $SSH_ARGS "$PETALINUX_DIR/Projects/$RUN_PETALINUX_PROJECT/images/linux/image.ub" root@$IP_ADDR:$SDCARD
+		sshpass -p $PASSWORD scp $SSH_ARGS "/home/esi/Projects/simple_socket/build_client/client" root@$IP_ADDR:$SDCARD
+		sshpass -p $PASSWORD scp $SSH_ARGS "/home/esi/Projects/simple_socket/resources/dump_packet.csv" root@$IP_ADDR:$SDCARD
+		sshpass -p $PASSWORD ssh $SSH_ARGS root@$IP_ADDR "umount $SDCARD"
+	fi
+	if [[ "$response" == *"5"* ]]; then
+		echo "----------------------Send elf to SD-----------------------"
+		HOME=/home/root
+		sshpass -p $PASSWORD ssh $SSH_ARGS root@$IP_ADDR "mkdir resources build"
+		sshpass -p $PASSWORD scp $SSH_ARGS "/home/esi/Projects/simple_socket/build_client/client" root@$IP_ADDR:$HOME/build/
+		sshpass -p $PASSWORD scp $SSH_ARGS "/home/esi/Projects/simple_socket/resources/dump_packet.csv" root@$IP_ADDR:$HOME/resources/
+	fi
+	if [[ "$response" == *"0"* ]]; then
+		break
+	fi
+done
